@@ -11,3 +11,4 @@ python-telegram-bot==20.8
 newspaper3k==0.2.8
 lxml==4.9.3
 lxml_html_clean==0.1.1
+flask==3.0.0
