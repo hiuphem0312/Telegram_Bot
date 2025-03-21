@@ -193,30 +193,32 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
 # -----------------------------
 def init_google_sheets():
     """
-    Initializes connection to Google Sheets using service account credentials.
-    
+    Initializes connection to Google Sheets using service account credentials
+    stored as a Secret File on Render at /etc/secrets/credentials.json.
+
     Returns:
         gspread.Spreadsheet: The opened spreadsheet object.
     """
-    credentials_file = os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE')
-    if not credentials_file:
-        raise Exception("Missing GOOGLE_SHEETS_CREDENTIALS_FILE in .env")
-    
-    if not os.path.exists(credentials_file):
-        raise Exception(f"Credentials file not found: {credentials_file}")
-    
+    secret_path = "/etc/secrets/credentials.json"
+    if not os.path.exists(secret_path):
+        raise Exception(f"Credentials file not found at {secret_path}")
+
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
-    credentials = Credentials.from_service_account_file(credentials_file, scopes=scopes)
-    client = gspread.authorize(credentials)
     
+    # Create credentials from the secret file
+    credentials = Credentials.from_service_account_file(secret_path, scopes=scopes)
+    client = gspread.authorize(credentials)
+
+    # Read the spreadsheet ID from an environment variable
     spreadsheet_id = os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID')
     if not spreadsheet_id:
         raise Exception("Missing GOOGLE_SHEETS_SPREADSHEET_ID in .env")
-    
+
     return client.open_by_key(spreadsheet_id)
+
 
 def get_or_create_worksheet(spreadsheet) -> gspread.Worksheet:
     """
