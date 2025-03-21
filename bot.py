@@ -1,8 +1,10 @@
 import os
-import logging
 import re
+import logging
+import threading
 from dotenv import load_dotenv
 
+from flask import Flask
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -27,6 +29,14 @@ logger = logging.getLogger(__name__)
 
 # Regex to quickly check if message text looks like a URL
 URL_REGEX = re.compile(r"^https?://", re.IGNORECASE)
+
+# Minimal Flask app to keep Render from timing out
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    """Simple endpoint so Render sees an open port."""
+    return "Bot is alive!"
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -86,9 +96,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error handling URL: {e}", exc_info=True)
         await update.message.reply_text(f"Đã xảy ra lỗi: {str(e)}")
 
-def main():
+def run_telegram_bot():
     """
-    Main function to start the Telegram bot.
+    Runs the Telegram bot in polling mode.
     """
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not telegram_token:
@@ -101,9 +111,20 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Start the bot (runs until Ctrl+C is pressed)
-    logger.info("Bot is running...")
+    logger.info("Bot is running in polling mode...")
     app.run_polling()
 
+def run_flask():
+    """
+    Runs a minimal Flask server so Render detects an open port.
+    """
+    port = int(os.getenv("PORT", 8000))
+    logger.info(f"Starting Flask on port {port}")
+    flask_app.run(host="0.0.0.0", port=port)
+
 if __name__ == "__main__":
-    main()
+    # 1) Start Flask in one thread (keeps the service alive)
+    threading.Thread(target=run_flask).start()
+
+    # 2) Run the Telegram bot in the main thread
+    run_telegram_bot()
