@@ -34,7 +34,7 @@ app = Flask(__name__)
 
 # Get Telegram token and webhook URL
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = f"https://https://telegram-bot-2-6usu.onrender.com/webhook/7972682364:AAG4BFeK1jwPLeIQzB0Kw5sS-8Wu9JgeODo"  # Replace with your actual URL
+WEBHOOK_URL = f"https://telegram-bot-2-6usu.onrender.com/webhook/7972682364:AAG4BFeK1jwPLeIQzB0Kw5sS-8Wu9JgeODo"  # Replace with your actual URL
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
