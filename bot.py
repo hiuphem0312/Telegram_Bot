@@ -40,7 +40,7 @@ if not TELEGRAM_BOT_TOKEN:
 
 # Construct your Render domain + webhook endpoint
 # e.g. "https://telegram-bot-2-6usu.onrender.com"
-RENDER_BASE_URL = os.getenv("RENDER_EXTERNAL_HOSTNAME") or "telegram-bot-2-6usu.onrender.com"
+RENDER_BASE_URL = "telegram-bot-2-6usu.onrender.com"
 WEBHOOK_URL = f"https://{RENDER_BASE_URL}/webhook/{TELEGRAM_BOT_TOKEN}"
 
 # Initialize the Telegram bot application
