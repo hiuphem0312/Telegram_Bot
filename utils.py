@@ -74,9 +74,11 @@ def parse_deepseek_result(result_text: str) -> dict:
 def scrape_real_headline(url: str) -> str:
     """
     Try multiple approaches to get the exact headline:
-      1) <h1> with known classes (e.g. article_title, cms-title, detail-title, etc.)
-      2) Any <h1>
-      3) <meta property="og:title">
+      1) Look inside <header> with possible classes (e.g. col-39),
+         then find <h1> or known h1 classes inside it.
+      2) <h1> with known classes (e.g. article_title, cms-title, detail-title, etc.)
+      3) Any <h1>
+      4) <meta property="og:title">
     Fallback: 'Không có tiêu đề'
     """
     try:
@@ -84,27 +86,47 @@ def scrape_real_headline(url: str) -> str:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        # Attempt 1: Known classes for <h1>
-        # Add more classes if needed
-        possible_classes = [
+        # Attempt 1: Look for a <header> with known classes, then find <h1> inside
+        possible_header_classes = ['col-39']  # Add more if needed
+        possible_h1_classes = [
             'article_title', 'cms-title', 'detail-title', 'title-detail',
             'article-title', 'main-title'
         ]
-        for class_name in possible_classes:
+
+        for header_class in possible_header_classes:
+            header_tags = soup.find_all('header', class_=re.compile(header_class, re.IGNORECASE))
+            for header_tag in header_tags:
+                # 1a) Look for <h1> inside the header with known classes
+                for h1_class in possible_h1_classes:
+                    h1_tag = header_tag.find('h1', class_=re.compile(h1_class, re.IGNORECASE))
+                    if h1_tag:
+                        h1_text = " ".join(h1_tag.stripped_strings)
+                        if h1_text:
+                            return h1_text
+
+                # 1b) If no known class matched, look for any <h1> in this header
+                any_h1 = header_tag.find('h1')
+                if any_h1:
+                    h1_text = " ".join(any_h1.stripped_strings)
+                    if h1_text:
+                        return h1_text
+
+        # Attempt 2: Known classes for <h1> outside a <header>
+        for class_name in possible_h1_classes:
             h1_tag = soup.find('h1', class_=re.compile(class_name, re.IGNORECASE))
             if h1_tag:
                 h1_text = " ".join(h1_tag.stripped_strings)
                 if h1_text:
                     return h1_text
 
-        # Attempt 2: Any <h1> if no known class matched
+        # Attempt 3: Any <h1> if no known class matched
         h1_tag = soup.find('h1')
         if h1_tag:
             h1_text = " ".join(h1_tag.stripped_strings)
             if h1_text:
                 return h1_text
 
-        # Attempt 3: Check <meta property="og:title">
+        # Attempt 4: Check <meta property="og:title">
         og_tag = soup.find('meta', property='og:title')
         if og_tag and og_tag.get('content'):
             return og_tag['content'].strip()
@@ -288,7 +310,7 @@ def update_google_sheet(data: dict, url: str) -> None:
 def process_article(url: str) -> None:
     """
     1) newspaper3k -> main content
-    2) scrape_real_headline -> exact <h1> or og:title
+    2) scrape_real_headline -> exact <h1> from <header> or known classes, or og:title
     3) analyze_content -> subject, title, summary from DeepSeek
     4) override 'title' with real <h1>
     5) update sheet
