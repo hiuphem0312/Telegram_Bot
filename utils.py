@@ -78,15 +78,15 @@ def parse_deepseek_result(result_text: str) -> dict:
 # -----------------------------
 # NEW: Newspaper3k-based function
 # -----------------------------
-def fetch_webpage_content(url: str) -> str:
+def fetch_webpage_content(url: str) -> tuple:
     """
-    Fetch and clean the text content from a webpage using newspaper3k.
+    Fetch and clean the text content + actual title from a webpage using newspaper3k.
     
     Args:
         url (str): URL of the webpage.
     
     Returns:
-        str: Cleaned text content.
+        tuple: (Cleaned text content, real article title)
     """
     for attempt in range(MAX_RETRIES):
         try:
@@ -94,8 +94,8 @@ def fetch_webpage_content(url: str) -> str:
             article.download()
             article.parse()
 
-            # article.text is the extracted main text
             content = article.text.strip()
+            real_title = article.title.strip() if article.title else "Không có tiêu đề"
             
             if not content:
                 raise Exception("No content extracted by newspaper3k")
@@ -104,14 +104,14 @@ def fetch_webpage_content(url: str) -> str:
             if len(content) > MAX_CONTENT_LENGTH:
                 content = content[:MAX_CONTENT_LENGTH] + "..."
 
-            return content
+            return (content, real_title)
         
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed to parse article with newspaper3k: {e}")
             time.sleep(RETRY_DELAY)
     
     logger.error(f"Failed to fetch content from {url} after {MAX_RETRIES} attempts.")
-    return None
+    return None, None
 
 # -----------------------------
 # Content Analysis with DeepSeek
@@ -307,15 +307,41 @@ def process_article(url: str) -> None:
     """
     logger.info(f"Processing article: {url}")
     
-    content = fetch_webpage_content(url)
+    # 1) Fetch the content AND the real article title
+    content, real_title = None, None
+    for attempt in range(MAX_RETRIES):
+        try:
+            article = Article(url)
+            article.download()
+            article.parse()
+
+            content = article.text.strip()
+            real_title = article.title.strip() if article.title else "Không có tiêu đề"
+
+            if not content:
+                raise Exception("No content extracted by newspaper3k")
+
+            if len(content) > MAX_CONTENT_LENGTH:
+                content = content[:MAX_CONTENT_LENGTH] + "..."
+            
+            break  # Successfully got content/title
+        except Exception as e:
+            logger.warning(f"Attempt {attempt + 1} failed: {e}")
+            time.sleep(RETRY_DELAY)
+
     if not content:
         logger.error("Content extraction failed.")
         return
-    
+
+    # 2) Analyze with DeepSeek
     analysis = analyze_content(content)
     if not analysis:
         logger.error("Content analysis failed.")
         return
     
+    # 3) Override 'title' with the real headline
+    analysis['title'] = real_title
+
+    # 4) Update Google Sheet
     update_google_sheet(analysis, url)
     logger.info("Article processing complete.")
