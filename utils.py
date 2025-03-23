@@ -73,9 +73,10 @@ def parse_deepseek_result(result_text: str) -> dict:
 
 def scrape_real_headline(url: str) -> str:
     """
-    Try two ways to get the exact headline:
-      1) <h1> with all child text
-      2) <meta property="og:title">
+    Try multiple approaches to get the exact headline:
+      1) <h1> with known classes (e.g. article_title, cms-title, detail-title, etc.)
+      2) Any <h1>
+      3) <meta property="og:title">
     Fallback: 'Không có tiêu đề'
     """
     try:
@@ -83,20 +84,33 @@ def scrape_real_headline(url: str) -> str:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        # Attempt 1: Grab top-level <h1> (all child text)
+        # Attempt 1: Known classes for <h1>
+        # Add more classes if needed
+        possible_classes = [
+            'article_title', 'cms-title', 'detail-title', 'title-detail',
+            'article-title', 'main-title'
+        ]
+        for class_name in possible_classes:
+            h1_tag = soup.find('h1', class_=re.compile(class_name, re.IGNORECASE))
+            if h1_tag:
+                h1_text = " ".join(h1_tag.stripped_strings)
+                if h1_text:
+                    return h1_text
+
+        # Attempt 2: Any <h1> if no known class matched
         h1_tag = soup.find('h1')
         if h1_tag:
             h1_text = " ".join(h1_tag.stripped_strings)
             if h1_text:
                 return h1_text
 
-        # Attempt 2: Check <meta property="og:title">
+        # Attempt 3: Check <meta property="og:title">
         og_tag = soup.find('meta', property='og:title')
         if og_tag and og_tag.get('content'):
             return og_tag['content'].strip()
 
     except Exception as e:
-        logger.warning(f"Failed to scrape headline: {e}")
+        logger.warning(f"Failed to scrape real headline: {e}")
 
     return "Không có tiêu đề"
 
