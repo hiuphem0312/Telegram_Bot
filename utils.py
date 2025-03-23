@@ -9,7 +9,7 @@ from newspaper import Article
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 from dotenv import load_dotenv
-from bs4 import BeautifulSoup  # <-- We'll use BeautifulSoup for the real headline
+from bs4 import BeautifulSoup
 
 # Load environment variables
 load_dotenv()
@@ -20,11 +20,10 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
+RETRY_DELAY = 5
 REQUEST_TIMEOUT = 30
-MAX_CONTENT_LENGTH = 50000  # ~50KB
+MAX_CONTENT_LENGTH = 50000
 
-# API Configuration for DeepSeek (via OpenRouter)
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 if not OPENROUTER_API_KEY:
     raise Exception("Missing OPENROUTER_API_KEY in .env")
@@ -39,9 +38,6 @@ OPENROUTER_HEADERS = {
     'User-Agent': 'Mozilla/5.0'
 }
 
-# -----------------------------
-# Helper: Parse DeepSeek result
-# -----------------------------
 def parse_deepseek_result(result_text: str) -> dict:
     """
     Parse the DeepSeek API response line by line to capture:
@@ -75,33 +71,38 @@ def parse_deepseek_result(result_text: str) -> dict:
         'summary': sections['Tóm tắt'].strip()
     }
 
-# -----------------------------
-# NEW: Get Real Headline via BeautifulSoup
-# -----------------------------
 def scrape_real_headline(url: str) -> str:
     """
-    Directly fetch the top-level <h1> from the webpage using BeautifulSoup.
-    Returns the exact headline displayed on the site, or a fallback if none found.
+    Try two ways to get the exact headline:
+      1) <h1> with all child text
+      2) <meta property="og:title">
+    Fallback: 'Không có tiêu đề'
     """
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
+
+        # Attempt 1: Grab top-level <h1> (all child text)
         h1_tag = soup.find('h1')
         if h1_tag:
-            return h1_tag.get_text(strip=True)
+            h1_text = " ".join(h1_tag.stripped_strings)
+            if h1_text:
+                return h1_text
+
+        # Attempt 2: Check <meta property="og:title">
+        og_tag = soup.find('meta', property='og:title')
+        if og_tag and og_tag.get('content'):
+            return og_tag['content'].strip()
+
     except Exception as e:
-        logger.warning(f"Failed to scrape real headline from <h1>: {e}")
+        logger.warning(f"Failed to scrape headline: {e}")
 
-    return "Không có tiêu đề"  # Fallback if no <h1> found
+    return "Không có tiêu đề"
 
-# -----------------------------
-# Newspaper3k-based function
-# -----------------------------
 def fetch_webpage_content(url: str) -> str:
     """
-    Fetch and clean the text content from a webpage using newspaper3k.
-    (We will NOT rely on newspaper3k's .title, but use scrape_real_headline() instead.)
+    Use newspaper3k to fetch main article text.
     """
     for attempt in range(MAX_RETRIES):
         try:
@@ -113,7 +114,6 @@ def fetch_webpage_content(url: str) -> str:
             if not content:
                 raise Exception("No content extracted by newspaper3k")
 
-            # Limit content length
             if len(content) > MAX_CONTENT_LENGTH:
                 content = content[:MAX_CONTENT_LENGTH] + "..."
 
@@ -126,13 +126,9 @@ def fetch_webpage_content(url: str) -> str:
     logger.error(f"Failed to fetch content from {url} after {MAX_RETRIES} attempts.")
     return None
 
-# -----------------------------
-# Content Analysis with DeepSeek
-# -----------------------------
 def analyze_content(content: str) -> dict:
     """
-    Analyze content using the DeepSeek API (via OpenRouter) and extract key sections:
-    Chủ đề, Tiêu đề, Tóm tắt.
+    Analyze content using DeepSeek to get 'Chủ đề', 'Tiêu đề', 'Tóm tắt'.
     """
     if not content:
         raise ValueError("Empty content provided for analysis.")
@@ -152,7 +148,7 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
         "model": "deepseek/deepseek-r1:free",
         "messages": [
             {
-                "role": "system",
+                "role": "system", 
                 "content": "Bạn là một trợ lý AI chuyên phân tích nội dung. Hãy trả về kết quả theo đúng định dạng được yêu cầu."
             },
             {"role": "user", "content": prompt}
@@ -173,19 +169,15 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
             response.raise_for_status()
             result_json = response.json()
             
-            # Extract response content
             result_text = result_json['choices'][0]['message']['content']
             logger.info("Raw API response received:")
             logger.info(result_text)
             
-            # Parse the result text
             result_dict = parse_deepseek_result(result_text)
-            
-            # Warn if any sections are missing
             for section_key in ['subject', 'title', 'summary']:
                 if not result_dict.get(section_key):
                     logger.warning(f"Warning: '{section_key}' section is empty in the analysis result.")
-            
+
             return result_dict
         
         except requests.RequestException as e:
@@ -195,13 +187,10 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
     logger.error("Failed to analyze content after multiple attempts.")
     return {}
 
-# -----------------------------
-# Google Sheets Functions
-# -----------------------------
 def init_google_sheets():
     """
     Initializes connection to Google Sheets using service account credentials
-    stored as a Secret File on Render at /etc/secrets/credentials.json.
+    at /etc/secrets/credentials.json
     """
     secret_path = "/etc/secrets/credentials.json"
     if not os.path.exists(secret_path):
@@ -211,7 +200,6 @@ def init_google_sheets():
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
-
     credentials = Credentials.from_service_account_file(secret_path, scopes=scopes)
     client = gspread.authorize(credentials)
 
@@ -235,9 +223,8 @@ def get_or_create_worksheet(spreadsheet) -> gspread.Worksheet:
     except Exception as e:
         raise Exception(f"Error handling worksheet: {str(e)}")
 
-    # Ensure header row exists
+    # Ensure header row
     try:
-        # Columns: Chủ đề, Tiêu đề, Tóm tắt, Link bài báo, Timestamp
         headers = ['Chủ đề', 'Tiêu đề', 'Tóm tắt', 'Link bài báo', 'Timestamp']
         first_row = worksheet.row_values(1)
         if not first_row:
@@ -270,7 +257,6 @@ def update_google_sheet(data: dict, url: str) -> None:
         worksheet.append_row(new_row)
         logger.info("Data successfully added to Google Sheet.")
 
-        # Backup the data locally in a JSON file
         backup_data = {
             'timestamp': timestamp,
             'analysis': data,
@@ -285,37 +271,30 @@ def update_google_sheet(data: dict, url: str) -> None:
     except Exception as e:
         raise Exception(f"Error updating Google Sheet: {str(e)}")
 
-# -----------------------------
-# End-to-End Process Function
-# -----------------------------
 def process_article(url: str) -> None:
     """
-    1) Use newspaper3k to get the article's main text
-    2) Use BeautifulSoup to get the exact top-level <h1> as the real headline
-    3) Analyze content with DeepSeek to get Chủ đề, Tiêu đề, Tóm tắt
-    4) Override 'Tiêu đề' with the real headline from step 2
-    5) Update Google Sheet
+    1) newspaper3k -> main content
+    2) scrape_real_headline -> exact <h1> or og:title
+    3) analyze_content -> subject, title, summary from DeepSeek
+    4) override 'title' with real <h1>
+    5) update sheet
     """
     logger.info(f"Processing article: {url}")
 
-    # 1) newspaper3k -> content
     content = fetch_webpage_content(url)
     if not content:
         logger.error("Content extraction failed.")
         return
 
-    # 2) Directly scrape the <h1> for the real headline
     real_title = scrape_real_headline(url)
 
-    # 3) DeepSeek -> subject, title, summary
     analysis = analyze_content(content)
     if not analysis:
         logger.error("Content analysis failed.")
         return
 
-    # 4) Override 'Tiêu đề' with the real headline
+    # Force the real <h1> from the page
     analysis['title'] = real_title
 
-    # 5) Update Google Sheet
     update_google_sheet(analysis, url)
     logger.info("Article processing complete.")
