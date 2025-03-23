@@ -91,14 +91,12 @@ def fetch_webpage_content(url: str) -> tuple:
             article.download()
             article.parse()
 
-            # article.text is the extracted main text
             content = article.text.strip()
             title = article.title.strip() if article.title else "Không có tiêu đề"
             
             if not content:
                 raise Exception("No content extracted by newspaper3k")
 
-            # Limit content length
             if len(content) > MAX_CONTENT_LENGTH:
                 content = content[:MAX_CONTENT_LENGTH] + "..."
 
@@ -118,19 +116,12 @@ def analyze_content(content: str, article_title: str) -> dict:
     """
     Analyze content using the DeepSeek API (via OpenRouter) and extract key sections:
     Chủ đề, Tiêu đề, Tóm tắt.
-    
-    Args:
-        content (str): The content to analyze.
-        article_title (str): The actual title extracted from the article.
-    
-    Returns:
-        dict: Dictionary containing 'subject', 'title', 'summary'.
     """
     if not content:
         raise ValueError("Empty content provided for analysis.")
     
     prompt = f"""Hãy phân tích nội dung sau và trả về kết quả theo định dạng chính xác:
-
+    
 Chủ đề: [chủ đề chính (vd: chính trị, thể thao, thời trang...)]
 Tóm tắt: [tóm tắt ngắn gọn nội dung]
 
@@ -142,10 +133,7 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
     data = {
         "model": "deepseek/deepseek-r1:free",
         "messages": [
-            {
-                "role": "system", 
-                "content": "Bạn là một trợ lý AI chuyên phân tích nội dung. Hãy trả về kết quả theo đúng định dạng được yêu cầu."
-            },
+            {"role": "system", "content": "Bạn là một trợ lý AI chuyên phân tích nội dung. Hãy trả về kết quả theo đúng định dạng được yêu cầu."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
@@ -164,12 +152,10 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
             response.raise_for_status()
             result_json = response.json()
             
-            # Extract response content
             result_text = result_json['choices'][0]['message']['content']
             logger.info("Raw API response received:")
             logger.info(result_text)
             
-            # Parse the result text with actual article title
             result_dict = parse_deepseek_result(result_text, article_title)
             return result_dict
         
@@ -181,27 +167,37 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
     return {}
 
 # -----------------------------
+# Google Sheets Integration
+# -----------------------------
+def update_google_sheet(data: dict, url: str) -> None:
+    try:
+        spreadsheet = init_google_sheets()
+        worksheet = get_or_create_worksheet(spreadsheet)
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_row = [
+            data.get('subject', 'Không có thông tin'),
+            data.get('title', 'Không có thông tin'),
+            data.get('summary', 'Không có thông tin'),
+            url,
+            timestamp
+        ]
+        worksheet.append_row(new_row)
+    except Exception as e:
+        raise Exception(f"Error updating Google Sheet: {str(e)}")
+
+# -----------------------------
 # End-to-End Process Function
 # -----------------------------
 def process_article(url: str) -> None:
-    """
-    Processes the article by extracting content (with newspaper3k),
-    analyzing it (DeepSeek), and updating Google Sheet.
-    
-    Args:
-        url (str): URL of the article.
-    """
     logger.info(f"Processing article: {url}")
-    
     content, article_title = fetch_webpage_content(url)
     if not content:
         logger.error("Content extraction failed.")
         return
-    
     analysis = analyze_content(content, article_title)
     if not analysis:
         logger.error("Content analysis failed.")
         return
-    
     update_google_sheet(analysis, url)
     logger.info("Article processing complete.")
