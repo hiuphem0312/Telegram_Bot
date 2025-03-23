@@ -5,7 +5,7 @@ import json
 import logging
 import requests
 import gspread
-from newspaper import Article  # <-- NEW: newspaper3k import
+from newspaper import Article
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 from dotenv import load_dotenv
@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
+RETRY_DELAY = 5
 REQUEST_TIMEOUT = 30
-MAX_CONTENT_LENGTH = 50000  # ~50KB
+MAX_CONTENT_LENGTH = 50000
 
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 if not OPENROUTER_API_KEY:
@@ -62,7 +62,6 @@ def parse_deepseek_result(result_text: str) -> dict:
             current_section = 'Tóm tắt'
             sections['Tóm tắt'] = line[len('Tóm tắt:'):].strip()
         else:
-            # If we're in a section, append additional text
             if current_section and line:
                 sections[current_section] += ' ' + line
 
@@ -72,9 +71,6 @@ def parse_deepseek_result(result_text: str) -> dict:
         'summary': sections['Tóm tắt'].strip()
     }
 
-# -----------------------------
-# NEW Function: scrape_real_headline
-# -----------------------------
 def scrape_real_headline(url: str) -> str:
     """
     Try multiple approaches to get the exact headline:
@@ -187,7 +183,6 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
             response.raise_for_status()
             result_json = response.json()
             
-            # Extract response content
             result_text = result_json['choices'][0]['message']['content']
             logger.info("Raw API response received:")
             logger.info(result_text)
@@ -209,7 +204,7 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
 def init_google_sheets():
     """
     Initializes connection to Google Sheets using service account credentials
-    stored as a Secret File on Render at /etc/secrets/credentials.json.
+    at /etc/secrets/credentials.json
     """
     secret_path = "/etc/secrets/credentials.json"
     if not os.path.exists(secret_path):
@@ -242,7 +237,7 @@ def get_or_create_worksheet(spreadsheet) -> gspread.Worksheet:
     except Exception as e:
         raise Exception(f"Error handling worksheet: {str(e)}")
 
-    # Ensure header row exists
+    # Ensure header row
     try:
         headers = ['Chủ đề', 'Tiêu đề', 'Tóm tắt', 'Link bài báo', 'Timestamp']
         first_row = worksheet.row_values(1)
@@ -293,9 +288,10 @@ def update_google_sheet(data: dict, url: str) -> None:
 def process_article(url: str) -> None:
     """
     1) newspaper3k -> main content
-    2) analyze_content -> subject, title, summary from DeepSeek
-    3) override 'title' with real <h1> from known header class
-    4) update sheet
+    2) scrape_real_headline -> exact <h1> or og:title
+    3) analyze_content -> subject, title, summary from DeepSeek
+    4) override 'title' with real <h1>
+    5) update sheet
     """
     logger.info(f"Processing article: {url}")
 
@@ -304,16 +300,15 @@ def process_article(url: str) -> None:
         logger.error("Content extraction failed.")
         return
 
-    # Analyze with DeepSeek
+    real_title = scrape_real_headline(url)
+
     analysis = analyze_content(content)
     if not analysis:
         logger.error("Content analysis failed.")
         return
 
-    # 3) override 'title' with the real <h1>
-    real_title = scrape_real_headline(url)
+    # Force the real <h1> from the page
     analysis['title'] = real_title
 
-    # 4) Update Google Sheet
     update_google_sheet(analysis, url)
     logger.info("Article processing complete.")
