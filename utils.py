@@ -41,14 +41,14 @@ OPENROUTER_HEADERS = {
 # -----------------------------
 # Helper: Parse DeepSeek result
 # -----------------------------
-def parse_deepseek_result(result_text: str) -> dict:
+def parse_deepseek_result(result_text: str, article_title: str) -> dict:
     """
     Parse the DeepSeek API response line by line to capture
     'Chủ đề', 'Tiêu đề', 'Tóm tắt'.
     """
     sections = {
         'Chủ đề': '',
-        'Tiêu đề': '',
+        'Tiêu đề': article_title,  # Use actual article title
         'Tóm tắt': ''
     }
     current_section = None
@@ -58,9 +58,6 @@ def parse_deepseek_result(result_text: str) -> dict:
         if line.startswith('Chủ đề:'):
             current_section = 'Chủ đề'
             sections['Chủ đề'] = line[len('Chủ đề:'):].strip()
-        elif line.startswith('Tiêu đề:'):
-            current_section = 'Tiêu đề'
-            sections['Tiêu đề'] = line[len('Tiêu đề:'):].strip()
         elif line.startswith('Tóm tắt:'):
             current_section = 'Tóm tắt'
             sections['Tóm tắt'] = line[len('Tóm tắt:'):].strip()
@@ -71,14 +68,14 @@ def parse_deepseek_result(result_text: str) -> dict:
 
     return {
         'subject': sections['Chủ đề'].strip(),
-        'title': sections['Tiêu đề'].strip(),
+        'title': sections['Tiêu đề'].strip(),  # Ensuring title remains unchanged
         'summary': sections['Tóm tắt'].strip()
     }
 
 # -----------------------------
 # NEW: Newspaper3k-based function
 # -----------------------------
-def fetch_webpage_content(url: str) -> str:
+def fetch_webpage_content(url: str) -> tuple:
     """
     Fetch and clean the text content from a webpage using newspaper3k.
     
@@ -86,7 +83,7 @@ def fetch_webpage_content(url: str) -> str:
         url (str): URL of the webpage.
     
     Returns:
-        str: Cleaned text content.
+        tuple: (Cleaned text content, article title)
     """
     for attempt in range(MAX_RETRIES):
         try:
@@ -96,6 +93,7 @@ def fetch_webpage_content(url: str) -> str:
 
             # article.text is the extracted main text
             content = article.text.strip()
+            title = article.title.strip() if article.title else "Không có tiêu đề"
             
             if not content:
                 raise Exception("No content extracted by newspaper3k")
@@ -104,25 +102,26 @@ def fetch_webpage_content(url: str) -> str:
             if len(content) > MAX_CONTENT_LENGTH:
                 content = content[:MAX_CONTENT_LENGTH] + "..."
 
-            return content
+            return content, title
         
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed to parse article with newspaper3k: {e}")
             time.sleep(RETRY_DELAY)
     
     logger.error(f"Failed to fetch content from {url} after {MAX_RETRIES} attempts.")
-    return None
+    return None, None
 
 # -----------------------------
 # Content Analysis with DeepSeek
 # -----------------------------
-def analyze_content(content: str) -> dict:
+def analyze_content(content: str, article_title: str) -> dict:
     """
     Analyze content using the DeepSeek API (via OpenRouter) and extract key sections:
     Chủ đề, Tiêu đề, Tóm tắt.
     
     Args:
         content (str): The content to analyze.
+        article_title (str): The actual title extracted from the article.
     
     Returns:
         dict: Dictionary containing 'subject', 'title', 'summary'.
@@ -133,13 +132,12 @@ def analyze_content(content: str) -> dict:
     prompt = f"""Hãy phân tích nội dung sau và trả về kết quả theo định dạng chính xác:
 
 Chủ đề: [chủ đề chính (vd: chính trị, thể thao, thời trang...)]
-Tiêu đề: [tiêu đề của bài viết]
 Tóm tắt: [tóm tắt ngắn gọn nội dung]
 
 Nội dung cần phân tích:
 {content}
 
-Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đề:', 'Tiêu đề:', 'Tóm tắt:' ở đầu mỗi phần."""
+Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đề:', 'Tóm tắt:' ở đầu mỗi phần."""
     
     data = {
         "model": "deepseek/deepseek-r1:free",
@@ -171,14 +169,8 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
             logger.info("Raw API response received:")
             logger.info(result_text)
             
-            # Parse the result text
-            result_dict = parse_deepseek_result(result_text)
-            
-            # Warn if any sections are missing
-            for section_key in ['subject', 'title', 'summary']:
-                if not result_dict.get(section_key):
-                    logger.warning(f"Warning: '{section_key}' section is empty in the analysis result.")
-            
+            # Parse the result text with actual article title
+            result_dict = parse_deepseek_result(result_text, article_title)
             return result_dict
         
         except requests.RequestException as e:
@@ -187,112 +179,6 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
     
     logger.error("Failed to analyze content after multiple attempts.")
     return {}
-
-# -----------------------------
-# Google Sheets Functions
-# -----------------------------
-def init_google_sheets():
-    """
-    Initializes connection to Google Sheets using service account credentials
-    stored as a Secret File on Render at /etc/secrets/credentials.json.
-
-    Returns:
-        gspread.Spreadsheet: The opened spreadsheet object.
-    """
-    secret_path = "/etc/secrets/credentials.json"
-    if not os.path.exists(secret_path):
-        raise Exception(f"Credentials file not found at {secret_path}")
-
-    scopes = [
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive'
-    ]
-    
-    # Create credentials from the secret file
-    credentials = Credentials.from_service_account_file(secret_path, scopes=scopes)
-    client = gspread.authorize(credentials)
-
-    # Read the spreadsheet ID from an environment variable
-    spreadsheet_id = os.getenv('GOOGLE_SHEETS_SPREADSHEET_ID')
-    if not spreadsheet_id:
-        raise Exception("Missing GOOGLE_SHEETS_SPREADSHEET_ID in .env")
-
-    return client.open_by_key(spreadsheet_id)
-
-
-def get_or_create_worksheet(spreadsheet) -> gspread.Worksheet:
-    """
-    Retrieves the first worksheet or creates one if none exists.
-    
-    Args:
-        spreadsheet (gspread.Spreadsheet): The spreadsheet object.
-    
-    Returns:
-        gspread.Worksheet: The worksheet to update.
-    """
-    try:
-        worksheet = spreadsheet.get_worksheet(0)
-        if not worksheet:
-            worksheet = spreadsheet.add_worksheet(title="Sheet1", rows="1000", cols="20")
-            logger.info("Created new worksheet 'Sheet1'.")
-        else:
-            logger.info("Worksheet found.")
-    except Exception as e:
-        raise Exception(f"Error handling worksheet: {str(e)}")
-    
-    # Ensure header row exists
-    try:
-        # Columns: Chủ đề, Tiêu đề, Tóm tắt, Link bài báo, Timestamp
-        headers = ['Chủ đề', 'Tiêu đề', 'Tóm tắt', 'Link bài báo', 'Timestamp']
-        first_row = worksheet.row_values(1)
-        if not first_row:
-            logger.info("Adding headers to the worksheet...")
-            worksheet.append_row(headers)
-    except Exception as e:
-        raise Exception(f"Error processing headers: {str(e)}")
-    
-    return worksheet
-
-def update_google_sheet(data: dict, url: str) -> None:
-    """
-    Append analysis results to Google Sheet along with a timestamp
-    and the user-provided URL as 'Link bài báo'.
-    
-    Args:
-        data (dict): Analysis results with keys 'subject', 'title', 'summary'.
-        url (str): The URL that was analyzed (used as 'Link bài báo').
-    """
-    try:
-        spreadsheet = init_google_sheets()
-        worksheet = get_or_create_worksheet(spreadsheet)
-        
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_row = [
-            data.get('subject', 'Không có thông tin'),
-            data.get('title', 'Không có thông tin'),
-            data.get('summary', 'Không có thông tin'),
-            url,
-            timestamp
-        ]
-        
-        logger.info("Appending new data to Google Sheet...")
-        worksheet.append_row(new_row)
-        logger.info("Data successfully added to Google Sheet.")
-        
-        # Backup the data locally in a JSON file
-        backup_data = {
-            'timestamp': timestamp,
-            'analysis': data,
-            'url': url
-        }
-        backup_file = f"backup_{datetime.now().strftime('%Y%m%d')}.json"
-        with open(backup_file, 'a', encoding='utf-8') as f:
-            json.dump(backup_data, f, ensure_ascii=False)
-            f.write('\n')
-        logger.info(f"Backup data saved to {backup_file}.")
-    
-    except Exception as e:
-        raise Exception(f"Error updating Google Sheet: {str(e)}")
 
 # -----------------------------
 # End-to-End Process Function
@@ -307,12 +193,12 @@ def process_article(url: str) -> None:
     """
     logger.info(f"Processing article: {url}")
     
-    content = fetch_webpage_content(url)
+    content, article_title = fetch_webpage_content(url)
     if not content:
         logger.error("Content extraction failed.")
         return
     
-    analysis = analyze_content(content)
+    analysis = analyze_content(content, article_title)
     if not analysis:
         logger.error("Content analysis failed.")
         return
