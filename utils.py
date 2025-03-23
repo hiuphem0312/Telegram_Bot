@@ -9,6 +9,7 @@ from newspaper import Article
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup  # <-- We'll use BeautifulSoup for the real headline
 
 # Load environment variables
 load_dotenv()
@@ -44,11 +45,11 @@ OPENROUTER_HEADERS = {
 def parse_deepseek_result(result_text: str) -> dict:
     """
     Parse the DeepSeek API response line by line to capture:
-    'Chủ đề', 'Tóm tắt'.
-    (We no longer parse 'Tiêu đề' from DeepSeek, ignoring it.)
+    'Chủ đề', 'Tiêu đề', 'Tóm tắt'.
     """
     sections = {
         'Chủ đề': '',
+        'Tiêu đề': '',
         'Tóm tắt': ''
     }
     current_section = None
@@ -58,6 +59,9 @@ def parse_deepseek_result(result_text: str) -> dict:
         if line.startswith('Chủ đề:'):
             current_section = 'Chủ đề'
             sections['Chủ đề'] = line[len('Chủ đề:'):].strip()
+        elif line.startswith('Tiêu đề:'):
+            current_section = 'Tiêu đề'
+            sections['Tiêu đề'] = line[len('Tiêu đề:'):].strip()
         elif line.startswith('Tóm tắt:'):
             current_section = 'Tóm tắt'
             sections['Tóm tắt'] = line[len('Tóm tắt:'):].strip()
@@ -67,16 +71,37 @@ def parse_deepseek_result(result_text: str) -> dict:
 
     return {
         'subject': sections['Chủ đề'].strip(),
+        'title': sections['Tiêu đề'].strip(),
         'summary': sections['Tóm tắt'].strip()
     }
 
 # -----------------------------
+# NEW: Get Real Headline via BeautifulSoup
+# -----------------------------
+def scrape_real_headline(url: str) -> str:
+    """
+    Directly fetch the top-level <h1> from the webpage using BeautifulSoup.
+    Returns the exact headline displayed on the site, or a fallback if none found.
+    """
+    try:
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        h1_tag = soup.find('h1')
+        if h1_tag:
+            return h1_tag.get_text(strip=True)
+    except Exception as e:
+        logger.warning(f"Failed to scrape real headline from <h1>: {e}")
+
+    return "Không có tiêu đề"  # Fallback if no <h1> found
+
+# -----------------------------
 # Newspaper3k-based function
 # -----------------------------
-def fetch_webpage_content(url: str) -> tuple:
+def fetch_webpage_content(url: str) -> str:
     """
-    Fetch the text content + real article title using newspaper3k.
-    Returns (content, real_title).
+    Fetch and clean the text content from a webpage using newspaper3k.
+    (We will NOT rely on newspaper3k's .title, but use scrape_real_headline() instead.)
     """
     for attempt in range(MAX_RETRIES):
         try:
@@ -85,8 +110,6 @@ def fetch_webpage_content(url: str) -> tuple:
             article.parse()
 
             content = article.text.strip()
-            real_title = article.title.strip() if article.title else "Không có tiêu đề"
-            
             if not content:
                 raise Exception("No content extracted by newspaper3k")
 
@@ -94,37 +117,36 @@ def fetch_webpage_content(url: str) -> tuple:
             if len(content) > MAX_CONTENT_LENGTH:
                 content = content[:MAX_CONTENT_LENGTH] + "..."
 
-            return content, real_title
+            return content
         
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed to parse article with newspaper3k: {e}")
             time.sleep(RETRY_DELAY)
     
     logger.error(f"Failed to fetch content from {url} after {MAX_RETRIES} attempts.")
-    return None, None
+    return None
 
 # -----------------------------
 # Content Analysis with DeepSeek
 # -----------------------------
 def analyze_content(content: str) -> dict:
     """
-    Analyze content using the DeepSeek API (via OpenRouter)
-    and extract only 'Chủ đề' and 'Tóm tắt'.
+    Analyze content using the DeepSeek API (via OpenRouter) and extract key sections:
+    Chủ đề, Tiêu đề, Tóm tắt.
     """
     if not content:
         raise ValueError("Empty content provided for analysis.")
     
-    # NOTE: We removed 'Tiêu đề:' from the prompt
     prompt = f"""Hãy phân tích nội dung sau và trả về kết quả theo định dạng chính xác:
 
 Chủ đề: [chủ đề chính (vd: chính trị, thể thao, thời trang...)]
+Tiêu đề: [tiêu đề của bài viết]
 Tóm tắt: [tóm tắt ngắn gọn nội dung]
 
 Nội dung cần phân tích:
 {content}
 
-Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đề:', 'Tóm tắt:' ở đầu mỗi phần.
-"""
+Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đề:', 'Tiêu đề:', 'Tóm tắt:' ở đầu mỗi phần."""
 
     data = {
         "model": "deepseek/deepseek-r1:free",
@@ -138,7 +160,7 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
         "temperature": 0.3,
         "max_tokens": 1000
     }
-
+    
     for attempt in range(MAX_RETRIES):
         try:
             logger.info(f"Sending analysis request to DeepSeek API (attempt {attempt + 1})...")
@@ -150,25 +172,26 @@ Lưu ý: Phải trả về đúng định dạng với các từ khóa 'Chủ đ
             )
             response.raise_for_status()
             result_json = response.json()
-
+            
+            # Extract response content
             result_text = result_json['choices'][0]['message']['content']
             logger.info("Raw API response received:")
             logger.info(result_text)
-
-            # Parse only 'Chủ đề' and 'Tóm tắt'
+            
+            # Parse the result text
             result_dict = parse_deepseek_result(result_text)
-
+            
             # Warn if any sections are missing
-            for section_key in ['subject', 'summary']:
+            for section_key in ['subject', 'title', 'summary']:
                 if not result_dict.get(section_key):
-                    logger.warning(f"Warning: '{section_key}' is empty in the analysis result.")
-
+                    logger.warning(f"Warning: '{section_key}' section is empty in the analysis result.")
+            
             return result_dict
-
+        
         except requests.RequestException as e:
             logger.warning(f"Attempt {attempt + 1} failed during analysis: {e}")
             time.sleep(RETRY_DELAY)
-
+    
     logger.error("Failed to analyze content after multiple attempts.")
     return {}
 
@@ -267,29 +290,32 @@ def update_google_sheet(data: dict, url: str) -> None:
 # -----------------------------
 def process_article(url: str) -> None:
     """
-    Processes the article by:
-      1) Fetching content & real headline with newspaper3k
-      2) Getting Chủ đề & Tóm tắt from DeepSeek
-      3) Overriding Tiêu đề with the real headline
-      4) Updating Google Sheet
+    1) Use newspaper3k to get the article's main text
+    2) Use BeautifulSoup to get the exact top-level <h1> as the real headline
+    3) Analyze content with DeepSeek to get Chủ đề, Tiêu đề, Tóm tắt
+    4) Override 'Tiêu đề' with the real headline from step 2
+    5) Update Google Sheet
     """
     logger.info(f"Processing article: {url}")
 
-    # 1) newspaper3k -> content, real_title
-    content, real_title = fetch_webpage_content(url)
+    # 1) newspaper3k -> content
+    content = fetch_webpage_content(url)
     if not content:
         logger.error("Content extraction failed.")
         return
 
-    # 2) DeepSeek -> subject, summary (no longer returning a 'title')
+    # 2) Directly scrape the <h1> for the real headline
+    real_title = scrape_real_headline(url)
+
+    # 3) DeepSeek -> subject, title, summary
     analysis = analyze_content(content)
     if not analysis:
         logger.error("Content analysis failed.")
         return
 
-    # 3) Override 'title' in analysis with the real headline
+    # 4) Override 'Tiêu đề' with the real headline
     analysis['title'] = real_title
 
-    # 4) Update Google Sheet
+    # 5) Update Google Sheet
     update_google_sheet(analysis, url)
     logger.info("Article processing complete.")
